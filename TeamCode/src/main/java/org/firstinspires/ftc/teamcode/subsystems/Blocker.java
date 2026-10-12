@@ -8,7 +8,7 @@ import com.qualcomm.robotcore.hardware.Servo;
 public class Blocker {
 
     public static double BLOCKER_OPEN_POSITION = 0.0;
-    public static double BLOCKER_CLOSED_POSITION = 1.0;
+    public static double BLOCKER_CLOSED_POSITION = 0.4;
     private final Servo blockerServo;
 
 public Blocker(HardwareMap hardwareMap) {
