@@ -10,17 +10,22 @@ import org.firstinspires.ftc.teamcode.subsystems.Shooter;
 @TeleOp(name = "1. Competition TeleOp", group = "TeleOp")
 public class CompetitionTeleOp extends LinearOpMode {
 
-    private final Shooter shooter = new Shooter(hardwareMap);
-    private final Blocker blocker = new Blocker(hardwareMap);
-
-    private final Intake intake = new Intake(hardwareMap);
-
+    private Shooter shooter;
+    private Blocker blocker;
+    private Intake intake;
 
     private boolean shooterEnabled = false;
-    private boolean blockerEnabled = false;
+
+    private boolean blockerClosed = false;
+    private boolean lastDpadUp = false;
+    private boolean lastDpadDown = false;
 
     @Override
     public void runOpMode() {
+
+        shooter = new Shooter(hardwareMap);
+        blocker = new Blocker(hardwareMap);
+        intake = new Intake(hardwareMap);
 
         telemetry.addLine("Ready");
         telemetry.update();
@@ -29,30 +34,17 @@ public class CompetitionTeleOp extends LinearOpMode {
 
         while (opModeIsActive()) {
 
-            // Intake
-            if (gamepad1.right_bumper) {
-                intake.intakeOn();
-            } else {
-                intake.intakeOff();
-            }
-            // Shooting with Check of RPM
-            if (gamepad1.right_trigger > 0.5 && shooter.getRPM() > Shooter.TARGET_RPM -100) {
-                intake.intakeOn();
-                blockerEnabled = false;
-            } else if (gamepad1.left_trigger > 0.5) {
-                blockerEnabled = true;
-            }
+            // =============================
+            // SHOOTER TOGGLE
+            // =============================
 
-            // Shooter ON
             if (gamepad1.cross) {
                 shooterEnabled = true;
             }
 
-            // Shooter OFF
             if (gamepad1.circle) {
                 shooterEnabled = false;
             }
-
 
             if (shooterEnabled) {
                 shooter.shooterOn();
@@ -60,25 +52,112 @@ public class CompetitionTeleOp extends LinearOpMode {
                 shooter.shooterOff();
             }
 
-            if (blockerEnabled) {
+            // =============================
+            // BLOCKER
+            // =============================
+
+            if (gamepad1.dpad_up && !lastDpadUp) {
+                blockerClosed = true;
+            }
+
+            if (gamepad1.dpad_down && !lastDpadDown) {
+                blockerClosed = false;
+            }
+
+            lastDpadUp = gamepad1.dpad_up;
+            lastDpadDown = gamepad1.dpad_down;
+
+            if (blockerClosed) {
                 blocker.closeBlocker();
             } else {
                 blocker.openBlocker();
             }
 
-            telemetry.addLine("========== SHOOTER ==========");
+            // =============================
+            // FEED / INTAKE
+            // =============================
 
-            telemetry.addData("RPM", "%.0f", shooter.getRPM());
-            telemetry.addData("TARGET", "%.0f", Shooter.TARGET_RPM);
-            telemetry.addData("ERROR", "%.0f", Shooter.TARGET_RPM - shooter.getRPM());
+            if (gamepad1.right_trigger > 0.5
+                    && shooter.shooterReady(200)) {
 
-            telemetry.addLine();
+                intake.feedOn();
 
-            telemetry.addData("kF", "%.3f", Shooter.kF);
-            telemetry.addData("kP", "%.5f", Shooter.kP);
+            } else if (gamepad1.right_bumper) {
+
+                intake.intakeOn();
+
+            } else if (gamepad1.left_bumper) {
+
+                intake.intakeReverse();
+
+            } else {
+
+                intake.intakeOff();
+            }
+
+            // =============================
+            // SHOOTER TELEMETRY
+            // =============================
+
+            telemetry.addLine("===== SHOOTER =====");
+
+            telemetry.addData(
+                    "L Wheel RPM",
+                    "%.0f",
+                    shooter.getLeftRPM());
+
+            telemetry.addData(
+                    "L Motor RPM",
+                    "%.0f",
+                    shooter.getLeftMotorRPM());
+
+            telemetry.addData(
+                    "L Target",
+                    "%.0f",
+                    Shooter.TARGET_RPM_LEFT);
+
+            telemetry.addData(
+                    "L Power",
+                    "%.2f",
+                    shooter.getLeftPower());
+
+            telemetry.addLine("");
+
+            telemetry.addData(
+                    "R Wheel RPM",
+                    "%.0f",
+                    shooter.getRightRPM());
+
+            telemetry.addData(
+                    "R Motor RPM",
+                    "%.0f",
+                    shooter.getRightMotorRPM());
+
+            telemetry.addData(
+                    "R Target",
+                    "%.0f",
+                    Shooter.TARGET_RPM_RIGHT);
+
+            telemetry.addData(
+                    "R Power",
+                    "%.2f",
+                    shooter.getRightPower());
+
+            telemetry.addLine("");
+
+            telemetry.addData(
+                    "Ready",
+                    shooter.shooterReady(200) ? "YES" : "NO");
+
+            telemetry.addData(
+                    "Shooter",
+                    shooterEnabled ? "ON" : "OFF");
+
+            telemetry.addData(
+                    "Blocker",
+                    blockerClosed ? "CLOSED" : "OPEN");
 
             telemetry.update();
-
         }
     }
 }

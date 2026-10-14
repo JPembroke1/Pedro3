@@ -8,6 +8,8 @@ import com.qualcomm.robotcore.hardware.DcMotor;
 public class Intake {
 
     public static double INTAKE_POWER = 1.0;
+
+    public static double FEED_POWER = 0.7;
     private final DcMotor intakeMotor;
     private final DcMotor intakeMotor1;
 
@@ -25,6 +27,11 @@ public class Intake {
     public void intakeOn(){
         intakeMotor.setPower(INTAKE_POWER);
         intakeMotor1.setPower(INTAKE_POWER);
+    }
+
+    public void feedOn(){
+        intakeMotor.setPower(FEED_POWER);
+        intakeMotor1.setPower(FEED_POWER);
     }
 
     public void intakeOff(){
