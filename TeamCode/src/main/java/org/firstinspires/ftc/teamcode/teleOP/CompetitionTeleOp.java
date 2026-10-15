@@ -1,42 +1,119 @@
 package org.firstinspires.ftc.teamcode.teleOP;
 
+import com.pedropathing.drivetrain.DrivePowers;
+import com.pedropathing.follower.Follower;
+import com.pedropathing.follower.ManualDrive;
+
+import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
+import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.Blocker;
 import org.firstinspires.ftc.teamcode.subsystems.Intake;
 import org.firstinspires.ftc.teamcode.subsystems.Shooter;
 
+import java.util.List;
+
 @TeleOp(name = "1. Competition TeleOp", group = "TeleOp")
 public class CompetitionTeleOp extends LinearOpMode {
+
+    private Follower follower;
 
     private Shooter shooter;
     private Blocker blocker;
     private Intake intake;
 
-    private boolean shooterEnabled = false;
+    private List<LynxModule> hubs;
 
-    private boolean blockerClosed = false;
-    private boolean lastDpadUp = false;
-    private boolean lastDpadDown = false;
 
     @Override
     public void runOpMode() {
+
+        boolean shooterEnabled = false;
+
+        // =====================================
+        // PEDRO 3 DRIVE AND LOCALIZATION
+        // =====================================
+
+        follower = Constants.create(hardwareMap);
+
+        // =====================================
+        // ROBOT SUBSYSTEMS
+        // =====================================
 
         shooter = new Shooter(hardwareMap);
         blocker = new Blocker(hardwareMap);
         intake = new Intake(hardwareMap);
 
-        telemetry.addLine("Ready");
+        // =====================================
+        // LYNX BULK CACHING
+        // =====================================
+
+        hubs = hardwareMap.getAll(LynxModule.class);
+
+        for (LynxModule hub : hubs) {
+            hub.setBulkCachingMode(
+                    LynxModule.BulkCachingMode.MANUAL
+            );
+        }
+
+        // =====================================
+        // SAFETY INITIALISATION
+        // =====================================
+
+        shooterEnabled = false;
+
+        shooter.shooterOff();
+        intake.intakeOff();
+        blocker.closeBlocker();
+
+        telemetry.addLine("ROBOT READY");
+        telemetry.addLine("Drive: FIELD CENTRIC");
+        telemetry.addLine("Shooter: OFF");
+        telemetry.addLine("Blocker: CLOSED");
         telemetry.update();
 
         waitForStart();
 
+        if (isStopRequested()) {
+            return;
+        }
+
         while (opModeIsActive()) {
 
-            // =============================
-            // SHOOTER TOGGLE
-            // =============================
+            // Clear each hub cache exactly once per loop.
+            for (LynxModule hub : hubs) {
+                hub.clearBulkCache();
+            }
+
+            // =====================================
+            // FIELD-CENTRIC MECANUM DRIVE
+            // =====================================
+
+            double forward =
+                    -gamepad1.left_stick_y;
+
+            double strafe =
+                    gamepad1.left_stick_x;
+
+            double turn =
+                    gamepad1.right_stick_x;
+
+            DrivePowers drivePowers =
+                    ManualDrive.fieldCentric(
+                            forward,
+                            strafe,
+                            turn,
+                            follower.pose().heading()
+                    );
+
+            follower.manual(drivePowers);
+            follower.update();
+
+            // =====================================
+            // SHOOTER CONTROL
+            // =====================================
 
             if (gamepad1.cross) {
                 shooterEnabled = true;
@@ -47,38 +124,34 @@ public class CompetitionTeleOp extends LinearOpMode {
             }
 
             if (shooterEnabled) {
-                shooter.shooterOn();
+                shooter.update();
             } else {
                 shooter.shooterOff();
             }
 
-            // =============================
-            // BLOCKER
-            // =============================
+            // =====================================
+            // BLOCKER AND FEED
+            // =====================================
 
-            if (gamepad1.dpad_up && !lastDpadUp) {
-                blockerClosed = true;
-            }
+            boolean feedRequested =
+                    gamepad1.right_trigger > 0.5;
 
-            if (gamepad1.dpad_down && !lastDpadDown) {
-                blockerClosed = false;
-            }
-
-            lastDpadUp = gamepad1.dpad_up;
-            lastDpadDown = gamepad1.dpad_down;
-
-            if (blockerClosed) {
-                blocker.closeBlocker();
-            } else {
+            /*
+             * Blocker is always closed unless the
+             * right trigger is held.
+             */
+            if (feedRequested) {
                 blocker.openBlocker();
+            } else {
+                blocker.closeBlocker();
             }
 
-            // =============================
-            // FEED / INTAKE
-            // =============================
-
-            if (gamepad1.right_trigger > 0.5
-                    && shooter.shooterReady(200)) {
+            /*
+             * The blocker opens immediately on RT,
+             * but the intake only feeds once both
+             * shooter wheels are ready.
+             */
+            if (feedRequested && shooter.shooterReady()) {
 
                 intake.feedOn();
 
@@ -95,69 +168,59 @@ public class CompetitionTeleOp extends LinearOpMode {
                 intake.intakeOff();
             }
 
-            // =============================
-            // SHOOTER TELEMETRY
-            // =============================
+            // =====================================
+            // COMPACT COMPETITION HUD
+            // =====================================
 
-            telemetry.addLine("===== SHOOTER =====");
+            String shooterStatus;
 
-            telemetry.addData(
-                    "L Wheel RPM",
-                    "%.0f",
-                    shooter.getLeftRPM());
+            if (!shooterEnabled) {
+                shooterStatus = "OFF";
+            } else if (shooter.shooterReady()) {
+                shooterStatus = "READY";
+            } else {
+                shooterStatus = "SPINNING";
+            }
 
-            telemetry.addData(
-                    "L Motor RPM",
-                    "%.0f",
-                    shooter.getLeftMotorRPM());
+            String feedStatus;
 
-            telemetry.addData(
-                    "L Target",
-                    "%.0f",
-                    Shooter.TARGET_RPM_LEFT);
-
-            telemetry.addData(
-                    "L Power",
-                    "%.2f",
-                    shooter.getLeftPower());
-
-            telemetry.addLine("");
+            if (!feedRequested) {
+                feedStatus = "CLOSED";
+            } else if (shooter.shooterReady()) {
+                feedStatus = "FEEDING";
+            } else {
+                feedStatus = "WAITING";
+            }
 
             telemetry.addData(
-                    "R Wheel RPM",
-                    "%.0f",
-                    shooter.getRightRPM());
+                    "SHOOTER",
+                    shooterStatus
+            );
 
             telemetry.addData(
-                    "R Motor RPM",
-                    "%.0f",
-                    shooter.getRightMotorRPM());
+                    "FEED",
+                    feedStatus
+            );
 
             telemetry.addData(
-                    "R Target",
-                    "%.0f",
-                    Shooter.TARGET_RPM_RIGHT);
-
-            telemetry.addData(
-                    "R Power",
-                    "%.2f",
-                    shooter.getRightPower());
-
-            telemetry.addLine("");
-
-            telemetry.addData(
-                    "Ready",
-                    shooter.shooterReady(200) ? "YES" : "NO");
-
-            telemetry.addData(
-                    "Shooter",
-                    shooterEnabled ? "ON" : "OFF");
-
-            telemetry.addData(
-                    "Blocker",
-                    blockerClosed ? "CLOSED" : "OPEN");
+                    "POSE",
+                    "X %.1f  Y %.1f  H %.0f",
+                    follower.pose().x(),
+                    follower.pose().y(),
+                    Math.toDegrees(
+                            follower.pose().heading()
+                    )
+            );
 
             telemetry.update();
         }
+
+        // =====================================
+        // SAFETY SHUTDOWN
+        // =====================================
+
+        shooter.shooterOff();
+        intake.intakeOff();
+        blocker.closeBlocker();
     }
 }
