@@ -2,8 +2,6 @@ package org.firstinspires.ftc.teamcode.teleOP;
 
 import com.pedropathing.drivetrain.DrivePowers;
 import com.pedropathing.follower.Follower;
-import com.pedropathing.follower.ManualDrive;
-
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
@@ -15,8 +13,16 @@ import org.firstinspires.ftc.teamcode.subsystems.Shooter;
 
 import java.util.List;
 
-@TeleOp(name = "1. Competition TeleOp", group = "TeleOp")
+
+@TeleOp(
+        name = "1. Competition TeleOp",
+        group = "TeleOp"
+)
 public class CompetitionTeleOp extends LinearOpMode {
+
+    // =====================================
+    // SUBSYSTEMS
+    // =====================================
 
     private Follower follower;
 
@@ -27,27 +33,35 @@ public class CompetitionTeleOp extends LinearOpMode {
     private List<LynxModule> hubs;
 
 
+    // =====================================
+    // FEED SPIN-UP TIMER
+    // =====================================
+
+    private static final long FEED_SPINUP_TIME_MS = 500;
+
+    private long feedRequestStartNanos = 0L;
+
+
+    // =====================================
+    // RUN OPMODE
+    // =====================================
+
     @Override
     public void runOpMode() {
 
-        boolean shooterEnabled = false;
-
         // =====================================
-        // PEDRO 3 DRIVE AND LOCALIZATION
+        // SET UP ROBOT
         // =====================================
 
         follower = Constants.create(hardwareMap);
-
-        // =====================================
-        // ROBOT SUBSYSTEMS
-        // =====================================
 
         shooter = new Shooter(hardwareMap);
         blocker = new Blocker(hardwareMap);
         intake = new Intake(hardwareMap);
 
+
         // =====================================
-        // LYNX BULK CACHING
+        // BULK CACHING
         // =====================================
 
         hubs = hardwareMap.getAll(LynxModule.class);
@@ -58,169 +72,479 @@ public class CompetitionTeleOp extends LinearOpMode {
             );
         }
 
-        // =====================================
-        // SAFETY INITIALISATION
-        // =====================================
 
-        shooterEnabled = false;
+        // =====================================
+        // SAFE START
+        // =====================================
 
         shooter.shooterOff();
         intake.intakeOff();
         blocker.closeBlocker();
 
         telemetry.addLine("ROBOT READY");
-        telemetry.addLine("Drive: FIELD CENTRIC");
-        telemetry.addLine("Shooter: OFF");
-        telemetry.addLine("Blocker: CLOSED");
+        telemetry.addLine("Cross/A: Shooter on");
+        telemetry.addLine("Circle/B: Shooter idle");
+        telemetry.addLine("Right trigger: Automatic feed");
+        telemetry.addLine("Right bumper: Intake");
+        telemetry.addLine("Left bumper: Reverse intake");
+
+        telemetry.addData(
+                "Left shoot power",
+                "%.3f",
+                Shooter.LEFT_SHOOT_POWER
+        );
+
+        telemetry.addData(
+                "Back shoot power",
+                "%.3f",
+                Shooter.BACK_SHOOT_POWER
+        );
+
         telemetry.update();
+
+
+        // =====================================
+        // WAIT FOR START
+        // =====================================
 
         waitForStart();
 
         if (isStopRequested()) {
+            safeShutdown();
             return;
         }
 
+
+        // Start with the shooter running slowly.
+        shooter.shooterIdle();
+
+
+        // =====================================
+        // MAIN LOOP
+        // =====================================
+
         while (opModeIsActive()) {
 
-            // Clear each hub cache exactly once per loop.
+            // =====================================
+            // CLEAR BULK CACHE
+            // =====================================
+
+            /*
+             * Clear the cache once at the beginning
+             * of every control loop.
+             */
             for (LynxModule hub : hubs) {
                 hub.clearBulkCache();
             }
 
+
             // =====================================
-            // FIELD-CENTRIC MECANUM DRIVE
+            // DRIVE
             // =====================================
 
+            // Forward remains linear.
             double forward =
                     -gamepad1.left_stick_y;
 
+            /*
+             * Cubed input provides finer control
+             * near the centre of the joystick.
+             */
             double strafe =
-                    gamepad1.left_stick_x;
-
-            double turn =
-                    gamepad1.right_stick_x;
-
-            DrivePowers drivePowers =
-                    ManualDrive.fieldCentric(
-                            forward,
-                            strafe,
-                            turn,
-                            follower.pose().heading()
+                    -Math.pow(
+                            gamepad1.left_stick_x,
+                            3
                     );
 
-            follower.manual(drivePowers);
+            double turn =
+                    -Math.pow(
+                            gamepad1.right_stick_x,
+                            3
+                    );
+
+            follower.manual(
+                    new DrivePowers(
+                            forward,
+                            strafe,
+                            turn
+                    )
+            );
+
             follower.update();
 
-            // =====================================
-            // SHOOTER CONTROL
-            // =====================================
-
-            if (gamepad1.cross) {
-                shooterEnabled = true;
-            }
-
-            if (gamepad1.circle) {
-                shooterEnabled = false;
-            }
-
-            if (shooterEnabled) {
-                shooter.update();
-            } else {
-                shooter.shooterOff();
-            }
 
             // =====================================
-            // BLOCKER AND FEED
+            // DRIVER INPUTS
             // =====================================
 
             boolean feedRequested =
                     gamepad1.right_trigger > 0.5;
 
+            boolean intakeRequested =
+                    gamepad1.right_bumper;
+
+            boolean reverseRequested =
+                    gamepad1.left_bumper;
+
+            boolean shooterRequested =
+                    gamepad1.cross;
+
+            boolean idleRequested =
+                    gamepad1.circle;
+
+
+            // =====================================
+            // SHOOTER MODE CONTROL
+            // =====================================
+
             /*
-             * Blocker is always closed unless the
-             * right trigger is held.
+             * Control priority:
+             *
+             * 1. Feed request
+             * 2. Manual shooter request
+             * 3. Intake or reverse
+             * 4. Manual idle request
+             *
+             * Pulling the feed trigger automatically
+             * commands shooting power.
+             *
+             * The selected mode remains active until
+             * another command changes it.
              */
             if (feedRequested) {
-                blocker.openBlocker();
-            } else {
-                blocker.closeBlocker();
+
+                shooter.shooterOn();
+
+            } else if (shooterRequested) {
+
+                shooter.shooterOn();
+
+            } else if (intakeRequested || reverseRequested) {
+
+                /*
+                 * Reduce shooter power while operating
+                 * the intake normally.
+                 */
+                shooter.shooterIdle();
+
+            } else if (idleRequested) {
+
+                shooter.shooterIdle();
             }
+
+
+            // =====================================
+            // APPLY SHOOTER POWER
+            // =====================================
 
             /*
-             * The blocker opens immediately on RT,
-             * but the intake only feeds once both
-             * shooter wheels are ready.
+             * This must run once every loop.
+             *
+             * It applies the currently selected shooting,
+             * idle, or off powers. It also allows live
+             * configuration changes to take effect.
              */
-            if (feedRequested && shooter.shooterReady()) {
+            shooter.update();
 
-                intake.feedOn();
-
-            } else if (gamepad1.right_bumper) {
-
-                intake.intakeOn();
-
-            } else if (gamepad1.left_bumper) {
-
-                intake.intakeReverse();
-
-            } else {
-
-                intake.intakeOff();
-            }
 
             // =====================================
-            // COMPACT COMPETITION HUD
+            // READ SHOOTER VALUES ONCE
             // =====================================
 
-            String shooterStatus;
+            /*
+             * These values are diagnostic only in this
+             * open-loop version. They do not regulate
+             * motor power.
+             */
+            double leftRPM =
+                    shooter.getLeftRPM();
 
-            if (!shooterEnabled) {
-                shooterStatus = "OFF";
-            } else if (shooter.shooterReady()) {
-                shooterStatus = "READY";
+            double backRPM =
+                    shooter.getBackRPM();
+
+            double leftTPS =
+                    shooter.getLeftTicksPerSecond();
+
+            double backTPS =
+                    shooter.getBackTicksPerSecond();
+
+
+            // =====================================
+            // FEED SPIN-UP TIMING
+            // =====================================
+
+            if (feedRequested) {
+
+                /*
+                 * Start the timer on the first loop where
+                 * the right trigger is held.
+                 */
+                if (feedRequestStartNanos == 0L) {
+                    feedRequestStartNanos =
+                            System.nanoTime();
+                }
+
             } else {
-                shooterStatus = "SPINNING";
+
+                /*
+                 * Releasing the trigger resets the timer.
+                 * The next feed request must wait through
+                 * the spin-up period again.
+                 */
+                feedRequestStartNanos = 0L;
             }
 
-            String feedStatus;
+            double feedRequestTimeMs = 0.0;
 
-            if (!feedRequested) {
-                feedStatus = "CLOSED";
-            } else if (shooter.shooterReady()) {
-                feedStatus = "FEEDING";
-            } else {
-                feedStatus = "WAITING";
+            if (feedRequestStartNanos != 0L) {
+                feedRequestTimeMs =
+                        (System.nanoTime()
+                                - feedRequestStartNanos)
+                                / 1_000_000.0;
             }
 
+            boolean feedDelayComplete =
+                    feedRequested
+                            && feedRequestTimeMs
+                            >= FEED_SPINUP_TIME_MS;
+
+
+            // =====================================
+            // FEED / INTAKE CONTROL
+            // =====================================
+
+            if (feedRequested) {
+
+                /*
+                 * During this direct-power test there is
+                 * no RPM-ready interlock.
+                 *
+                 * Instead, feeding begins after the fixed
+                 * spin-up delay.
+                 */
+                if (feedDelayComplete) {
+
+                    blocker.openBlocker();
+                    intake.feedOn();
+
+                } else {
+
+                    blocker.closeBlocker();
+                    intake.intakeOff();
+                }
+
+            } else {
+
+                /*
+                 * The blocker remains closed unless the
+                 * driver is actively requesting a feed.
+                 */
+                blocker.closeBlocker();
+
+                if (intakeRequested) {
+
+                    intake.intakeOn();
+
+                } else if (reverseRequested) {
+
+                    intake.intakeReverse();
+
+                } else {
+
+                    intake.intakeOff();
+                }
+            }
+
+
+            // =====================================
+            // COMPETITION TELEMETRY
+            // =====================================
+
             telemetry.addData(
-                    "SHOOTER",
-                    shooterStatus
+                    "Shooter Mode",
+                    shooter.getModeName()
+            );
+
+            telemetry.addLine();
+
+
+            // -------------------------------------
+            // LEFT / FRONT WHEEL
+            // -------------------------------------
+
+            telemetry.addData(
+                    "Left RPM",
+                    "%.0f",
+                    leftRPM
             );
 
             telemetry.addData(
-                    "FEED",
-                    feedStatus
+                    "Left TPS",
+                    "%.0f",
+                    leftTPS
             );
 
             telemetry.addData(
-                    "POSE",
-                    "X %.1f  Y %.1f  H %.0f",
-                    follower.pose().x(),
-                    follower.pose().y(),
-                    Math.toDegrees(
-                            follower.pose().heading()
-                    )
+                    "Left Power",
+                    "%.3f",
+                    shooter.getLeftCommandedPower()
             );
+
+
+            // -------------------------------------
+            // BACK WHEEL
+            // -------------------------------------
+
+            telemetry.addData(
+                    "Back RPM",
+                    "%.0f",
+                    backRPM
+            );
+
+            telemetry.addData(
+                    "Back TPS",
+                    "%.0f",
+                    backTPS
+            );
+
+            telemetry.addData(
+                    "Back Power",
+                    "%.3f",
+                    shooter.getBackCommandedPower()
+            );
+
+            telemetry.addLine();
+
+
+            // -------------------------------------
+            // CONFIGURED VALUES
+            // -------------------------------------
+
+            telemetry.addData(
+                    "Configured Left Shoot",
+                    "%.3f",
+                    Shooter.LEFT_SHOOT_POWER
+            );
+
+            telemetry.addData(
+                    "Configured Back Shoot",
+                    "%.3f",
+                    Shooter.BACK_SHOOT_POWER
+            );
+
+            telemetry.addData(
+                    "Configured Left Idle",
+                    "%.3f",
+                    Shooter.LEFT_IDLE_POWER
+            );
+
+            telemetry.addData(
+                    "Configured Back Idle",
+                    "%.3f",
+                    Shooter.BACK_IDLE_POWER
+            );
+
+
+            // -------------------------------------
+            // FEED STATE
+            // -------------------------------------
+
+            if (feedRequested) {
+
+                if (feedDelayComplete) {
+
+                    telemetry.addData(
+                            "Feed",
+                            "FEEDING"
+                    );
+
+                } else {
+
+                    telemetry.addData(
+                            "Feed",
+                            "SPINNING UP %.0f / %d ms",
+                            feedRequestTimeMs,
+                            FEED_SPINUP_TIME_MS
+                    );
+                }
+
+            } else if (intakeRequested) {
+
+                telemetry.addData(
+                        "Feed",
+                        "INTAKING"
+                );
+
+            } else if (reverseRequested) {
+
+                telemetry.addData(
+                        "Feed",
+                        "REVERSING"
+                );
+
+            } else {
+
+                telemetry.addData(
+                        "Feed",
+                        "CLOSED"
+                );
+            }
+
+
+            // -------------------------------------
+            // POWER LIMIT WARNING
+            // -------------------------------------
+
+            if (shooter.isShooting()
+                    && shooter.getBackCommandedPower()
+                    >= 0.999) {
+
+                telemetry.addLine(
+                        "BACK MOTOR AT MAXIMUM POWER"
+                );
+            }
 
             telemetry.update();
         }
 
+
         // =====================================
-        // SAFETY SHUTDOWN
+        // SAFE SHUTDOWN
         // =====================================
 
-        shooter.shooterOff();
-        intake.intakeOff();
-        blocker.closeBlocker();
+        safeShutdown();
+    }
+
+
+    // =====================================
+    // SAFE SHUTDOWN
+    // =====================================
+
+    private void safeShutdown() {
+
+        if (follower != null) {
+
+            follower.manual(
+                    new DrivePowers(
+                            0,
+                            0,
+                            0
+                    )
+            );
+
+            follower.update();
+        }
+
+        if (shooter != null) {
+            shooter.shooterOff();
+        }
+
+        if (intake != null) {
+            intake.intakeOff();
+        }
+
+        if (blocker != null) {
+            blocker.closeBlocker();
+        }
     }
 }

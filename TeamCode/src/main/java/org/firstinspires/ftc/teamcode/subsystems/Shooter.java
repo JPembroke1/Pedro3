@@ -8,75 +8,55 @@ import com.qualcomm.robotcore.hardware.HardwareMap;
 @Configurable
 public class Shooter {
 
-    // =====================================
-    // SHOOTING SETTINGS
-    // =====================================
+    // =========================================================
+    // TUNABLE MOTOR POWERS
+    // =========================================================
 
-    public static double TARGET_RPM_LEFT = 2800.0;
-    public static double KF_LEFT = 0.7;
-    public static double KP_LEFT = 0.00001;
+    // Competition shooting powers
+    public static double LEFT_SHOOT_POWER = 0.75;
+    public static double BACK_SHOOT_POWER = 1.00;
 
-    public static double TARGET_RPM_RIGHT = 5400.0;
-    public static double KF_RIGHT = 1.0;
-    public static double KP_RIGHT = 0.00001;
+    // Lower powers used to keep the wheels spinning
+    public static double LEFT_IDLE_POWER = 0.25;
+    public static double BACK_IDLE_POWER = 0.30;
 
-    // =====================================
-    // IDLE SETTINGS
-    // =====================================
-    public static double IDLE_POWER_LEFT = 0.25;
-    public static double IDLE_POWER_RIGHT = 0.35;
-
-    // =====================================
-    // READY TOLERANCES
-    // =====================================
-
-    public static double LEFT_READY_TOLERANCE = 300.0;
-    public static double RIGHT_READY_TOLERANCE = 500.0;
-
-    // =====================================
-    // MOTOR AND GEAR SETTINGS
-    // =====================================
-
+    // Encoder ticks per MOTOR revolution
     public static double TICKS_PER_REV = 28.0;
 
-    // 10T motor sprocket driving 14T shooter sprocket
+    // 10-tooth motor sprocket driving 14-tooth shooter sprocket
     public static double LEFT_GEAR_RATIO = 10.0 / 14.0;
 
-    public static double RIGHT_GEAR_RATIO = 1.0;
+    // Back/right wheel is direct drive
+    public static double BACK_GEAR_RATIO = 1.0;
 
-    // =====================================
+
+    // =========================================================
     // HARDWARE
-    // =====================================
+    // =========================================================
 
     private final DcMotorEx leftMotor;
-    private final DcMotorEx rightMotor;
+    private final DcMotorEx backMotor;
 
-    // =====================================
-    // CONTROL
-    // =====================================
 
-    /*
-     * true  = full shooting PF control
-     * false = reduced idle power
-     */
-    private boolean shooting = false;
+    // =========================================================
+    // STATE
+    // =========================================================
 
-    // Used only for initialization and safety shutdown.
-    private boolean stopped = true;
+    private enum ShooterMode {
+        OFF,
+        IDLE,
+        SHOOTING
+    }
 
-    // =====================================
-    // CACHED VALUES
-    // =====================================
+    private ShooterMode mode = ShooterMode.OFF;
 
-    private double leftRPM;
-    private double rightRPM;
+    private double leftCommandedPower = 0.0;
+    private double backCommandedPower = 0.0;
 
-    private double leftError;
-    private double rightError;
 
-    // =====================================
+    // =========================================================
     // CONSTRUCTOR
-    // =====================================
+    // =========================================================
 
     public Shooter(HardwareMap hardwareMap) {
 
@@ -85,215 +65,185 @@ public class Shooter {
                 "shooterMotor"
         );
 
-        rightMotor = hardwareMap.get(
+        backMotor = hardwareMap.get(
                 DcMotorEx.class,
                 "shooterMotor1"
         );
 
+        /*
+         * Change either direction if that wheel spins backwards.
+         */
         leftMotor.setDirection(DcMotor.Direction.REVERSE);
-        rightMotor.setDirection(DcMotor.Direction.REVERSE);
+        backMotor.setDirection(DcMotor.Direction.REVERSE);
 
         leftMotor.setZeroPowerBehavior(
                 DcMotor.ZeroPowerBehavior.FLOAT
         );
 
-        rightMotor.setZeroPowerBehavior(
+        backMotor.setZeroPowerBehavior(
                 DcMotor.ZeroPowerBehavior.FLOAT
         );
 
+        /*
+         * Direct power control.
+         *
+         * Encoders can still be read with getVelocity().
+         */
         leftMotor.setMode(
                 DcMotor.RunMode.RUN_WITHOUT_ENCODER
         );
 
-        rightMotor.setMode(
+        backMotor.setMode(
                 DcMotor.RunMode.RUN_WITHOUT_ENCODER
         );
 
         shooterOff();
     }
 
-    // =====================================
+
+    // =========================================================
+    // PERIODIC UPDATE
+    // =========================================================
+
+    /**
+     * Applies the currently configured motor powers.
+     *
+     * Call this once during every TeleOp loop. This allows live
+     * configuration changes to take effect immediately.
+     */
+    public void update() {
+
+        switch (mode) {
+            case SHOOTING:
+                leftCommandedPower = clip(LEFT_SHOOT_POWER);
+                backCommandedPower = clip(BACK_SHOOT_POWER);
+                break;
+
+            case IDLE:
+                leftCommandedPower = clip(LEFT_IDLE_POWER);
+                backCommandedPower = clip(BACK_IDLE_POWER);
+                break;
+
+            case OFF:
+            default:
+                leftCommandedPower = 0.0;
+                backCommandedPower = 0.0;
+                break;
+        }
+
+        leftMotor.setPower(leftCommandedPower);
+        backMotor.setPower(backCommandedPower);
+    }
+
+
+    // =========================================================
     // MODE COMMANDS
-    // =====================================
+    // =========================================================
 
     public void shooterOn() {
-        stopped = false;
-        shooting = true;
+        mode = ShooterMode.SHOOTING;
     }
 
     public void shooterIdle() {
-        stopped = false;
-        shooting = false;
+        mode = ShooterMode.IDLE;
     }
 
     public void shooterOff() {
-        stopped = true;
-        shooting = false;
+        mode = ShooterMode.OFF;
+
+        leftCommandedPower = 0.0;
+        backCommandedPower = 0.0;
 
         leftMotor.setPower(0.0);
-        rightMotor.setPower(0.0);
-
-        leftRPM = 0.0;
-        rightRPM = 0.0;
-
-        leftError = 0.0;
-        rightError = 0.0;
+        backMotor.setPower(0.0);
     }
 
-    // =====================================
-    // UPDATE
-    // =====================================
 
-    public void update() {
-
-        // Read each motor velocity once per loop.
-        leftRPM = calculateWheelRPM(
-                leftMotor,
-                LEFT_GEAR_RATIO
-        );
-
-        rightRPM = calculateWheelRPM(
-                rightMotor,
-                RIGHT_GEAR_RATIO
-        );
-
-        if (stopped) {
-            leftMotor.setPower(0.0);
-            rightMotor.setPower(0.0);
-
-            leftError = 0.0;
-            rightError = 0.0;
-            return;
-        }
-
-        if (!shooting) {
-            // Idle uses reduced fixed power.
-            leftMotor.setPower(
-                    clamp(IDLE_POWER_LEFT, 0.0, 1.0)
-            );
-
-            rightMotor.setPower(
-                    clamp(IDLE_POWER_RIGHT, 0.0, 1.0)
-            );
-
-            /*
-             * Keep the errors relative to shooting speed.
-             * This means shooterReady() remains false at idle.
-             */
-            leftError = TARGET_RPM_LEFT - leftRPM;
-            rightError = TARGET_RPM_RIGHT - rightRPM;
-            return;
-        }
-
-        // Full shooting PF control.
-        leftError = TARGET_RPM_LEFT - leftRPM;
-        rightError = TARGET_RPM_RIGHT - rightRPM;
-
-        double leftPower =
-                KF_LEFT + (leftError * KP_LEFT);
-
-        double rightPower =
-                KF_RIGHT + (rightError * KP_RIGHT);
-
-        leftMotor.setPower(
-                clamp(leftPower, 0.0, 1.0)
-        );
-
-        rightMotor.setPower(
-                clamp(rightPower, 0.0, 1.0)
-        );
-    }
-
-    // =====================================
-    // RPM
-    // =====================================
+    // =========================================================
+    // RPM READINGS
+    // =========================================================
 
     public double getLeftRPM() {
-        return leftRPM;
+        return ticksPerSecondToWheelRPM(
+                Math.abs(leftMotor.getVelocity()),
+                LEFT_GEAR_RATIO
+        );
     }
 
-    public double getRightRPM() {
-        return rightRPM;
+    public double getBackRPM() {
+        return ticksPerSecondToWheelRPM(
+                Math.abs(backMotor.getVelocity()),
+                BACK_GEAR_RATIO
+        );
     }
 
-    // =====================================
-    // ERROR
-    // =====================================
-
-    public double getLeftError() {
-        return leftError;
+    public double getLeftTicksPerSecond() {
+        return Math.abs(leftMotor.getVelocity());
     }
 
-    public double getRightError() {
-        return rightError;
+    public double getBackTicksPerSecond() {
+        return Math.abs(backMotor.getVelocity());
     }
 
-    // =====================================
-    // POWER
-    // =====================================
 
-    public double getLeftPower() {
-        return leftMotor.getPower();
+    // =========================================================
+    // POWER INFORMATION
+    // =========================================================
+
+    public double getLeftCommandedPower() {
+        return leftCommandedPower;
     }
 
-    public double getRightPower() {
-        return rightMotor.getPower();
+    public double getBackCommandedPower() {
+        return backCommandedPower;
     }
 
-    // =====================================
-    // STATUS
-    // =====================================
+
+    // =========================================================
+    // MODE INFORMATION
+    // =========================================================
 
     public boolean isShooting() {
-        return shooting && !stopped;
+        return mode == ShooterMode.SHOOTING;
     }
 
     public boolean isIdle() {
-        return !shooting && !stopped;
+        return mode == ShooterMode.IDLE;
     }
 
-    public boolean isStopped() {
-        return stopped;
+    public boolean isOff() {
+        return mode == ShooterMode.OFF;
     }
 
-    public boolean leftReady() {
-        return isShooting()
-                && Math.abs(leftError)
-                <= LEFT_READY_TOLERANCE;
+    public String getModeName() {
+        return mode.name();
     }
 
-    public boolean rightReady() {
-        return isShooting()
-                && Math.abs(rightError)
-                <= RIGHT_READY_TOLERANCE;
-    }
 
-    public boolean shooterReady() {
-        return leftReady() && rightReady();
-    }
-
-    // =====================================
+    // =========================================================
     // UTILITIES
-    // =====================================
+    // =========================================================
 
-    private double calculateWheelRPM(
-            DcMotorEx motor,
+    private double ticksPerSecondToWheelRPM(
+            double ticksPerSecond,
             double gearRatio
     ) {
-        return Math.abs(motor.getVelocity())
-                * 60.0
-                / TICKS_PER_REV
-                * gearRatio;
+        if (TICKS_PER_REV <= 0.0 || gearRatio <= 0.0) {
+            return 0.0;
+        }
+
+        double motorRPM =
+                ticksPerSecond
+                        * 60.0
+                        / TICKS_PER_REV;
+
+        return motorRPM * gearRatio;
     }
 
-    private double clamp(
-            double value,
-            double minimum,
-            double maximum
-    ) {
+    private double clip(double power) {
         return Math.max(
-                minimum,
-                Math.min(maximum, value)
+                0.0,
+                Math.min(1.0, power)
         );
     }
 }
