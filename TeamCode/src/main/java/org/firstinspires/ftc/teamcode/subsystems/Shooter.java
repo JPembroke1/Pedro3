@@ -13,16 +13,14 @@ public class Shooter {
     // =========================================================
 
     // Shooter wheel RPM, not motor RPM.
-    public static double LEFT_TARGET_RPM = 2800.0;
-    public static double RIGHT_TARGET_RPM = 5100.0;
+    public static double TARGET_RPM = 2800.0;
 
 
     // =========================================================
     // IDLE TARGET RPM
     // =========================================================
 
-    public static double LEFT_IDLE_RPM = 1000.0;
-    public static double RIGHT_IDLE_RPM = 1800.0;
+    public static double IDLE_RPM = 1000.0;
 
 
     // =========================================================
@@ -31,81 +29,72 @@ public class Shooter {
     // This is the approximate power required to maintain the
     // target RPM.
     //
-    // P control adds/subtracts power from these values.
+    // P control adds or subtracts power from this value.
     // =========================================================
 
-    public static double LEFT_BASE_POWER = 0.70;
-    public static double RIGHT_BASE_POWER = 1.0;
+    public static double BASE_POWER = 0.70;
 
 
     // =========================================================
     // IDLE BASE POWER
     // =========================================================
 
-    public static double LEFT_IDLE_BASE_POWER = 0.25;
-    public static double RIGHT_IDLE_BASE_POWER = 0.30;
+    public static double IDLE_BASE_POWER = 0.25;
 
 
     // =========================================================
-    // SHOOTING P GAINS
-    //
-    // IMPORTANT:
-    //
-    // These gains operate on RPM error:
+    // SHOOTING P GAIN
     //
     // error = targetRPM - measuredRPM
     //
     // power = basePower + (error * KP)
     //
-    // These are NOT ticks-per-second gains.
+    // This gain operates on RPM error, not ticks per second.
     // =========================================================
 
-    public static double LEFT_KP = 0.0006;
-    public static double RIGHT_KP = 0.0009;
+    public static double KP = 0.0006;
 
 
     // =========================================================
-    // IDLE P GAINS
+    // IDLE P GAIN
     // =========================================================
 
-    public static double LEFT_IDLE_KP = 0.00010;
-    public static double RIGHT_IDLE_KP = 0.00010;
+    public static double IDLE_KP = 0.00010;
 
 
     // =========================================================
     // ENCODER SETTINGS
     // =========================================================
 
-    // Encoder ticks per MOTOR revolution.
+    // Encoder ticks per motor revolution.
     public static double TICKS_PER_REV = 28.0;
 
 
     // =========================================================
-    // GEAR RATIOS
+    // GEAR RATIO
     //
-    // Ratio = motor speed -> shooter wheel speed
+    // Ratio converts motor RPM to shooter-wheel RPM.
     //
-    // Left:
-    // 10 tooth motor sprocket -> 14 tooth shooter sprocket
+    // wheelRPM = motorRPM * GEAR_RATIO
     //
-    // wheelRPM = motorRPM * (10 / 14)
+    // Direct drive:
+    // GEAR_RATIO = 1.0
+    //
+    // 10-tooth driver to 14-tooth driven:
+    // GEAR_RATIO = 10.0 / 14.0
     // =========================================================
 
-    public static double LEFT_GEAR_RATIO = 10.0 / 14.0;
-
-    // Right/back shooter is direct drive.
-    public static double RIGHT_GEAR_RATIO = 1.0;
+    public static double GEAR_RATIO = 1.0;
 
 
     // =========================================================
     // READY SETTINGS
     // =========================================================
 
-    // Absolute RPM tolerance around target.
-    public static double LEFT_READY_TOLERANCE_RPM = 500.0;
-    public static double RIGHT_READY_TOLERANCE_RPM = 500.0;
+    // Absolute RPM tolerance around TARGET_RPM.
+    public static double READY_TOLERANCE_RPM = 500.0;
 
-    // Both wheels must remain inside tolerance for this long.
+    // Both motors must remain ready for this duration.
     public static double READY_SETTLE_TIME_MS = 200.0;
 
 
@@ -138,10 +127,10 @@ public class Shooter {
     private double activeRightTargetRPM = 0.0;
 
     /*
-     * These contain the RPM sampled during update().
+     * These contain the RPM values sampled during update().
      *
-     * TeleOp can retrieve these without causing another hardware
-     * read during the same bulk-cache cycle.
+     * TeleOp can retrieve these without causing additional
+     * hardware reads during the same bulk-cache cycle.
      */
     private double measuredLeftRPM = 0.0;
     private double measuredRightRPM = 0.0;
@@ -153,8 +142,8 @@ public class Shooter {
     private double rightCommandedPower = 0.0;
 
     /*
-     * Time at which BOTH shooter wheels first entered their
-     * ready tolerance.
+     * Time at which both shooter wheels first entered their ready
+     * tolerance.
      *
      * Zero means ready timing has not started.
      */
@@ -167,7 +156,7 @@ public class Shooter {
 
     public Shooter(HardwareMap hardwareMap) {
 
-        // Must match FTC Robot Configuration names.
+        // Must match the FTC Robot Configuration names.
         leftMotor = hardwareMap.get(
                 DcMotorEx.class,
                 "shooterMotor"
@@ -227,12 +216,12 @@ public class Shooter {
         // =====================================================
 
         /*
-         * We are running our OWN external P controller.
+         * The subsystem runs its own external P controller.
          *
          * RUN_WITHOUT_ENCODER means setPower() directly controls
-         * the motors rather than using the REV velocity PID.
+         * motor power rather than using the REV velocity PID.
          *
-         * DcMotorEx.getVelocity() still gives encoder velocity.
+         * DcMotorEx.getVelocity() still provides encoder velocity.
          */
         leftMotor.setMode(
                 DcMotor.RunMode.RUN_WITHOUT_ENCODER
@@ -255,15 +244,13 @@ public class Shooter {
     /**
      * Runs the shooter controller.
      *
-     * IMPORTANT:
-     *
-     * Call this ONCE during every CompetitionTeleOp loop after
+     * Call this once during every CompetitionTeleOp loop after
      * selecting the desired shooter mode.
      */
     public void update() {
 
         // -----------------------------------------------------
-        // Read wheel speed once per control loop
+        // Read wheel speeds once per control loop
         // -----------------------------------------------------
 
         measuredLeftRPM = readLeftRPM();
@@ -298,37 +285,26 @@ public class Shooter {
         // Select mode parameters
         // -----------------------------------------------------
 
-        double leftBasePower;
-        double rightBasePower;
-
-        double selectedLeftKP;
-        double selectedRightKP;
-
+        double selectedTargetRPM;
+        double selectedBasePower;
+        double selectedKP;
 
         if (mode == ShooterMode.SHOOTING) {
 
-            activeLeftTargetRPM = LEFT_TARGET_RPM;
-            activeRightTargetRPM = RIGHT_TARGET_RPM;
-
-            leftBasePower = LEFT_BASE_POWER;
-            rightBasePower = RIGHT_BASE_POWER;
-
-            selectedLeftKP = LEFT_KP;
-            selectedRightKP = RIGHT_KP;
+            selectedTargetRPM = TARGET_RPM;
+            selectedBasePower = BASE_POWER;
+            selectedKP = KP;
 
         } else {
 
             // IDLE
-
-            activeLeftTargetRPM = LEFT_IDLE_RPM;
-            activeRightTargetRPM = RIGHT_IDLE_RPM;
-
-            leftBasePower = LEFT_IDLE_BASE_POWER;
-            rightBasePower = RIGHT_IDLE_BASE_POWER;
-
-            selectedLeftKP = LEFT_IDLE_KP;
-            selectedRightKP = RIGHT_IDLE_KP;
+            selectedTargetRPM = IDLE_RPM;
+            selectedBasePower = IDLE_BASE_POWER;
+            selectedKP = IDLE_KP;
         }
+
+        activeLeftTargetRPM = selectedTargetRPM;
+        activeRightTargetRPM = selectedTargetRPM;
 
 
         // -----------------------------------------------------
@@ -351,15 +327,15 @@ public class Shooter {
         leftCommandedPower = calculatePower(
                 activeLeftTargetRPM,
                 measuredLeftRPM,
-                leftBasePower,
-                selectedLeftKP
+                selectedBasePower,
+                selectedKP
         );
 
         rightCommandedPower = calculatePower(
                 activeRightTargetRPM,
                 measuredRightRPM,
-                rightBasePower,
-                selectedRightKP
+                selectedBasePower,
+                selectedKP
         );
 
 
@@ -368,19 +344,13 @@ public class Shooter {
         // -----------------------------------------------------
 
         /*
-         * No slew-rate limiter.
+         * There is no slew-rate limiter.
          *
-         * If a ball hits the wheels and RPM drops, we want the
-         * P controller to be able to command full power on the
-         * next control loop.
+         * If a ball causes an RPM drop, the P controller can
+         * command the required recovery power immediately.
          */
-        leftMotor.setPower(
-                leftCommandedPower
-        );
-
-        rightMotor.setPower(
-                rightCommandedPower
-        );
+        leftMotor.setPower(leftCommandedPower);
+        rightMotor.setPower(rightCommandedPower);
     }
 
 
@@ -393,7 +363,7 @@ public class Shooter {
      *
      * errorRPM = targetRPM - measuredRPM
      *
-     * correction = errorRPM * KP
+     * correction = errorRPM * kP
      *
      * power = basePower + correction
      */
@@ -409,10 +379,12 @@ public class Shooter {
         }
 
         double errorRPM =
-                targetRPM - measuredRPM;
+                targetRPM
+                        - measuredRPM;
 
         double proportionalCorrection =
-                errorRPM * kP;
+                errorRPM
+                        * kP;
 
         return clipPower(
                 basePower
@@ -428,10 +400,10 @@ public class Shooter {
     public void shooterOn() {
 
         /*
-         * Only reset readiness when transitioning INTO shooting.
+         * Only reset readiness when transitioning into SHOOTING.
          *
-         * Your TeleOp calls shooterOn() repeatedly while the
-         * trigger is held, so we MUST NOT reset every call.
+         * TeleOp may call shooterOn() repeatedly while a trigger
+         * is held, so the timer must not reset on every call.
          */
         if (mode != ShooterMode.SHOOTING) {
             resetReadyTimer();
@@ -466,6 +438,9 @@ public class Shooter {
         activeLeftTargetRPM = 0.0;
         activeRightTargetRPM = 0.0;
 
+        measuredLeftRPM = 0.0;
+        measuredRightRPM = 0.0;
+
         leftErrorRPM = 0.0;
         rightErrorRPM = 0.0;
 
@@ -480,13 +455,12 @@ public class Shooter {
 
 
     // =========================================================
-    // RPM
+    // RPM GETTERS
     // =========================================================
 
     /**
-     * Returns the RPM sampled during the most recent update().
-     *
-     * It deliberately does NOT perform another hardware read.
+     * Returns the left wheel RPM sampled during the latest
+     * update().
      */
     public double getLeftRPM() {
         return measuredLeftRPM;
@@ -494,7 +468,8 @@ public class Shooter {
 
 
     /**
-     * Returns the RPM sampled during the most recent update().
+     * Returns the right wheel RPM sampled during the latest
+     * update().
      */
     public double getRightRPM() {
         return measuredRightRPM;
@@ -514,7 +489,7 @@ public class Shooter {
 
         return ticksPerSecondToWheelRPM(
                 ticksPerSecond,
-                LEFT_GEAR_RATIO
+                GEAR_RATIO
         );
     }
 
@@ -528,7 +503,7 @@ public class Shooter {
 
         return ticksPerSecondToWheelRPM(
                 ticksPerSecond,
-                RIGHT_GEAR_RATIO
+                GEAR_RATIO
         );
     }
 
@@ -557,9 +532,7 @@ public class Shooter {
     // INDIVIDUAL READY CHECKS
     // =========================================================
 
-    public boolean isLeftReady(
-            double leftRPM
-    ) {
+    public boolean isLeftReady(double leftRPM) {
 
         if (mode != ShooterMode.SHOOTING) {
             return false;
@@ -567,18 +540,16 @@ public class Shooter {
 
         double rpmError =
                 Math.abs(
-                        LEFT_TARGET_RPM
+                        TARGET_RPM
                                 - leftRPM
                 );
 
         return rpmError
-                <= LEFT_READY_TOLERANCE_RPM;
+                <= READY_TOLERANCE_RPM;
     }
 
 
-    public boolean isRightReady(
-            double rightRPM
-    ) {
+    public boolean isRightReady(double rightRPM) {
 
         if (mode != ShooterMode.SHOOTING) {
             return false;
@@ -586,12 +557,12 @@ public class Shooter {
 
         double rpmError =
                 Math.abs(
-                        RIGHT_TARGET_RPM
+                        TARGET_RPM
                                 - rightRPM
                 );
 
         return rpmError
-                <= RIGHT_READY_TOLERANCE_RPM;
+                <= READY_TOLERANCE_RPM;
     }
 
 
@@ -600,8 +571,6 @@ public class Shooter {
     // =========================================================
 
     /**
-     * Convenience version.
-     *
      * Uses RPM values captured during the latest update().
      */
     public boolean shooterReady() {
@@ -614,8 +583,6 @@ public class Shooter {
 
 
     /**
-     * Competition TeleOp version.
-     *
      * Both wheels must remain within tolerance continuously for
      * READY_SETTLE_TIME_MS before this returns true.
      */
@@ -637,10 +604,7 @@ public class Shooter {
                 isRightReady(rightRPM);
 
 
-        // -----------------------------------------------------
-        // Either wheel dropped out of tolerance
-        // -----------------------------------------------------
-
+        // Either wheel has dropped outside tolerance.
         if (!leftReady || !rightReady) {
 
             resetReadyTimer();
@@ -648,10 +612,7 @@ public class Shooter {
         }
 
 
-        // -----------------------------------------------------
-        // Both wheels have just become ready
-        // -----------------------------------------------------
-
+        // Both wheels have just entered tolerance.
         if (readySinceNanos == 0L) {
 
             readySinceNanos =
@@ -661,10 +622,7 @@ public class Shooter {
         }
 
 
-        // -----------------------------------------------------
-        // Both wheels remain ready
-        // -----------------------------------------------------
-
+        // Both wheels remain inside tolerance.
         double stableTimeMs =
                 (System.nanoTime()
                         - readySinceNanos)
@@ -689,20 +647,17 @@ public class Shooter {
     // =========================================================
 
     public boolean isShooting() {
-        return mode
-                == ShooterMode.SHOOTING;
+        return mode == ShooterMode.SHOOTING;
     }
 
 
     public boolean isIdle() {
-        return mode
-                == ShooterMode.IDLE;
+        return mode == ShooterMode.IDLE;
     }
 
 
     public boolean isOff() {
-        return mode
-                == ShooterMode.OFF;
+        return mode == ShooterMode.OFF;
     }
 
 
@@ -761,6 +716,10 @@ public class Shooter {
 
     public double getLeftMotorRPM() {
 
+        if (TICKS_PER_REV <= 0.0) {
+            return 0.0;
+        }
+
         return Math.abs(
                 leftMotor.getVelocity()
         )
@@ -771,6 +730,10 @@ public class Shooter {
 
     public double getRightMotorRPM() {
 
+        if (TICKS_PER_REV <= 0.0) {
+            return 0.0;
+        }
+
         return Math.abs(
                 rightMotor.getVelocity()
         )
@@ -780,7 +743,7 @@ public class Shooter {
 
 
     // =========================================================
-    // TICKS PER SECOND -> SHOOTER WHEEL RPM
+    // TICKS PER SECOND TO SHOOTER-WHEEL RPM
     // =========================================================
 
     private double ticksPerSecondToWheelRPM(
@@ -808,9 +771,7 @@ public class Shooter {
     // POWER CLIPPING
     // =========================================================
 
-    private double clipPower(
-            double power
-    ) {
+    private double clipPower(double power) {
 
         return Math.max(
                 0.0,
