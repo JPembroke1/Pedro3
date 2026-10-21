@@ -25,20 +25,7 @@ public class CompetitionTeleOp extends LinearOpMode {
     // LIVE-TUNABLE FEED SETTINGS
     // =========================================================
 
-    /*
-     * How long the feeder runs for each ball.
-     *
-     * Increase if a ball does not completely enter the shooter.
-     * Decrease if more than one ball is being fed per pulse.
-     */
     public static long FEED_PULSE_TIME_MS = 10;
-
-    /*
-     * Minimum pause after each feed pulse.
-     *
-     * The shooter must also become RPM-ready again before the
-     * next feed pulse begins.
-     */
     public static long FEED_RECOVERY_TIME_MS = 0;
 
 
@@ -67,7 +54,6 @@ public class CompetitionTeleOp extends LinearOpMode {
     }
 
     private FeedState feedState = FeedState.IDLE;
-
     private long feedStateStartNanos = 0L;
 
 
@@ -80,9 +66,9 @@ public class CompetitionTeleOp extends LinearOpMode {
 
         try {
 
-            // =================================================
-            // INITIALISE ROBOT
-            // =================================================
+            // -------------------------------------------------
+            // Initialise robot
+            // -------------------------------------------------
 
             follower = Constants.create(hardwareMap);
 
@@ -91,9 +77,9 @@ public class CompetitionTeleOp extends LinearOpMode {
             intake = new Intake(hardwareMap);
 
 
-            // =================================================
-            // MANUAL BULK CACHING
-            // =================================================
+            // -------------------------------------------------
+            // Manual bulk caching
+            // -------------------------------------------------
 
             hubs = hardwareMap.getAll(LynxModule.class);
 
@@ -104,9 +90,9 @@ public class CompetitionTeleOp extends LinearOpMode {
             }
 
 
-            // =================================================
-            // SAFE INITIAL STATE
-            // =================================================
+            // -------------------------------------------------
+            // Safe initial state
+            // -------------------------------------------------
 
             shooter.shooterOff();
             intake.intakeOff();
@@ -115,14 +101,14 @@ public class CompetitionTeleOp extends LinearOpMode {
             resetFeedSequence();
 
 
-            // =================================================
-            // INITIAL TELEMETRY
-            // =================================================
+            // -------------------------------------------------
+            // Initial telemetry
+            // -------------------------------------------------
 
             telemetry.addLine("ROBOT READY");
             telemetry.addLine("Cross/A: Shooter ON");
             telemetry.addLine("Circle/B: Shooter IDLE");
-            telemetry.addLine("Right trigger: Pulse feed");
+            telemetry.addLine("Right trigger: Automatic pulse feed");
             telemetry.addLine("Right bumper: Intake");
             telemetry.addLine("Left bumper: Reverse intake");
 
@@ -139,37 +125,49 @@ public class CompetitionTeleOp extends LinearOpMode {
             );
 
             telemetry.addData(
-                    "Left target",
+                    "Shooting target",
                     "%.0f RPM",
-                    Shooter.LEFT_TARGET_RPM
+                    Shooter.TARGET_RPM
             );
 
             telemetry.addData(
-                    "Right target",
+                    "Idle target",
                     "%.0f RPM",
-                    Shooter.RIGHT_TARGET_RPM
+                    Shooter.IDLE_RPM
             );
 
             telemetry.addData(
-                    "Left base / KP",
+                    "Shooting Base / KP",
                     "%.3f / %.6f",
-                    Shooter.LEFT_BASE_POWER,
-                    Shooter.LEFT_KP
+                    Shooter.BASE_POWER,
+                    Shooter.KP
             );
 
             telemetry.addData(
-                    "Right base / KP",
+                    "Idle Base / KP",
                     "%.3f / %.6f",
-                    Shooter.RIGHT_BASE_POWER,
-                    Shooter.RIGHT_KP
+                    Shooter.IDLE_BASE_POWER,
+                    Shooter.IDLE_KP
+            );
+
+            telemetry.addData(
+                    "Ready tolerance",
+                    "+/- %.0f RPM",
+                    Shooter.READY_TOLERANCE_RPM
+            );
+
+            telemetry.addData(
+                    "Ready settle time",
+                    "%.0f ms",
+                    Shooter.READY_SETTLE_TIME_MS
             );
 
             telemetry.update();
 
 
-            // =================================================
-            // WAIT FOR START
-            // =================================================
+            // -------------------------------------------------
+            // Wait for start
+            // -------------------------------------------------
 
             waitForStart();
 
@@ -177,8 +175,7 @@ public class CompetitionTeleOp extends LinearOpMode {
                 return;
             }
 
-
-            // Start with the shooter running at idle speed.
+            // Start at idle RPM.
             shooter.shooterIdle();
 
 
@@ -188,18 +185,18 @@ public class CompetitionTeleOp extends LinearOpMode {
 
             while (opModeIsActive()) {
 
-                // =============================================
-                // CLEAR BULK CACHE
-                // =============================================
+                // ---------------------------------------------
+                // Clear bulk cache
+                // ---------------------------------------------
 
                 for (LynxModule hub : hubs) {
                     hub.clearBulkCache();
                 }
 
 
-                // =============================================
-                // DRIVER INPUTS
-                // =============================================
+                // ---------------------------------------------
+                // Driver inputs
+                // ---------------------------------------------
 
                 boolean feedRequested =
                         gamepad1.right_trigger > 0.5;
@@ -217,24 +214,18 @@ public class CompetitionTeleOp extends LinearOpMode {
                         gamepad1.circle;
 
 
-                // =============================================
-                // DRIVE CONTROL
-                // =============================================
+                // ---------------------------------------------
+                // Drive control
+                // ---------------------------------------------
 
                 double forward =
                         -gamepad1.left_stick_y;
 
                 double strafe =
-                        -Math.pow(
-                                gamepad1.left_stick_x,
-                                3
-                        );
+                        -Math.pow(gamepad1.left_stick_x, 3);
 
                 double turn =
-                        -Math.pow(
-                                gamepad1.right_stick_x,
-                                3
-                        );
+                        -Math.pow(gamepad1.right_stick_x, 3);
 
                 follower.manual(
                         new DrivePowers(
@@ -247,21 +238,20 @@ public class CompetitionTeleOp extends LinearOpMode {
                 follower.update();
 
 
-                // =============================================
-                // SHOOTER MODE CONTROL
-                // =============================================
+                // ---------------------------------------------
+                // Shooter mode control
+                // ---------------------------------------------
+                //
+                // Priority:
+                // 1. Feed request
+                // 2. Manual shooter command
+                // 3. Intake/reverse
+                // 4. Manual idle command
+                //
+                // If no command is entered, the current shooter
+                // mode remains latched.
+                // ---------------------------------------------
 
-                /*
-                 * Priority:
-                 *
-                 * 1. Feed trigger
-                 * 2. Manual shooter ON
-                 * 3. Intake or reverse
-                 * 4. Manual shooter IDLE
-                 *
-                 * Shooter mode remains latched if no new command
-                 * is entered.
-                 */
                 if (feedRequested) {
 
                     shooter.shooterOn();
@@ -270,8 +260,7 @@ public class CompetitionTeleOp extends LinearOpMode {
 
                     shooter.shooterOn();
 
-                } else if (intakeRequested
-                        || reverseRequested) {
+                } else if (intakeRequested || reverseRequested) {
 
                     shooter.shooterIdle();
 
@@ -281,22 +270,16 @@ public class CompetitionTeleOp extends LinearOpMode {
                 }
 
 
-                // =============================================
-                // RUN SHOOTER P CONTROLLER
-                // =============================================
+                // ---------------------------------------------
+                // Run shooter controller exactly once
+                // ---------------------------------------------
 
-                /*
-                 * Must be called exactly once per active loop.
-                 *
-                 * This reads RPM, calculates P correction, and
-                 * applies motor power.
-                 */
                 shooter.update();
 
 
-                // =============================================
-                // READ STORED SHOOTER VALUES
-                // =============================================
+                // ---------------------------------------------
+                // Read values stored by Shooter.update()
+                // ---------------------------------------------
 
                 double leftRPM =
                         shooter.getLeftRPM();
@@ -310,6 +293,10 @@ public class CompetitionTeleOp extends LinearOpMode {
                 boolean rightReady =
                         shooter.isRightReady(rightRPM);
 
+                /*
+                 * This method also manages READY_SETTLE_TIME_MS.
+                 * It should only be called once per active loop.
+                 */
                 boolean shooterReady =
                         shooter.shooterReady(
                                 leftRPM,
@@ -317,19 +304,14 @@ public class CompetitionTeleOp extends LinearOpMode {
                         );
 
 
-                // =============================================
-                // UPDATE FEED STATE MACHINE
-                // =============================================
+                // ---------------------------------------------
+                // Update feed controller
+                // ---------------------------------------------
 
                 updateFeedState(
                         feedRequested,
                         shooterReady
                 );
-
-
-                // =============================================
-                // APPLY FEEDER / INTAKE OUTPUTS
-                // =============================================
 
                 applyFeedAndIntakeOutputs(
                         feedRequested,
@@ -338,9 +320,9 @@ public class CompetitionTeleOp extends LinearOpMode {
                 );
 
 
-                // =============================================
-                // TELEMETRY
-                // =============================================
+                // ---------------------------------------------
+                // Telemetry
+                // ---------------------------------------------
 
                 telemetry.addData(
                         "Shooter Mode",
@@ -376,7 +358,7 @@ public class CompetitionTeleOp extends LinearOpMode {
 
 
                 // ---------------------------------------------
-                // LEFT SHOOTER
+                // Left shooter
                 // ---------------------------------------------
 
                 telemetry.addData(
@@ -403,11 +385,17 @@ public class CompetitionTeleOp extends LinearOpMode {
                         leftReady ? "YES" : "NO"
                 );
 
+                telemetry.addData(
+                        "Left Encoder",
+                        "%.0f ticks/s",
+                        shooter.getLeftTicksPerSecond()
+                );
+
                 telemetry.addLine();
 
 
                 // ---------------------------------------------
-                // RIGHT / BACK SHOOTER
+                // Right shooter
                 // ---------------------------------------------
 
                 telemetry.addData(
@@ -434,11 +422,17 @@ public class CompetitionTeleOp extends LinearOpMode {
                         rightReady ? "YES" : "NO"
                 );
 
+                telemetry.addData(
+                        "Right Encoder",
+                        "%.0f ticks/s",
+                        shooter.getRightTicksPerSecond()
+                );
+
                 telemetry.addLine();
 
 
                 // ---------------------------------------------
-                // LIVE FEED SETTINGS
+                // Live feed settings
                 // ---------------------------------------------
 
                 telemetry.addData(
@@ -455,43 +449,77 @@ public class CompetitionTeleOp extends LinearOpMode {
 
 
                 // ---------------------------------------------
-                // SHOOTER TUNING SETTINGS
+                // Shooter live-tuning settings
                 // ---------------------------------------------
 
                 telemetry.addData(
-                        "Left Base / KP",
-                        "%.3f / %.6f",
-                        Shooter.LEFT_BASE_POWER,
-                        Shooter.LEFT_KP
+                        "Shooting Target",
+                        "%.0f RPM",
+                        Shooter.TARGET_RPM
                 );
 
                 telemetry.addData(
-                        "Right Base / KP",
+                        "Shooting Base / KP",
                         "%.3f / %.6f",
-                        Shooter.RIGHT_BASE_POWER,
-                        Shooter.RIGHT_KP
+                        Shooter.BASE_POWER,
+                        Shooter.KP
+                );
+
+                telemetry.addData(
+                        "Idle Target",
+                        "%.0f RPM",
+                        Shooter.IDLE_RPM
+                );
+
+                telemetry.addData(
+                        "Idle Base / KP",
+                        "%.3f / %.6f",
+                        Shooter.IDLE_BASE_POWER,
+                        Shooter.IDLE_KP
+                );
+
+                telemetry.addData(
+                        "Ready Tolerance",
+                        "+/- %.0f RPM",
+                        Shooter.READY_TOLERANCE_RPM
+                );
+
+                telemetry.addData(
+                        "Ready Settle",
+                        "%.0f ms",
+                        Shooter.READY_SETTLE_TIME_MS
+                );
+
+                telemetry.addData(
+                        "Ticks / Rev",
+                        "%.1f",
+                        Shooter.TICKS_PER_REV
+                );
+
+                telemetry.addData(
+                        "Gear Ratio",
+                        "%.4f",
+                        Shooter.GEAR_RATIO
                 );
 
 
                 // ---------------------------------------------
-                // POWER LIMIT WARNINGS
+                // Power-limit warnings
                 // ---------------------------------------------
 
                 if (shooter.isShooting()
-                        && shooter.getLeftCommandedPower()
-                        >= 0.999) {
+                        && shooter.getLeftCommandedPower() >= 0.999) {
 
                     telemetry.addLine(
-                            "LEFT MOTOR AT MAXIMUM POWER"
+                            "WARNING: LEFT SHOOTER AT MAX POWER"
                     );
                 }
 
                 if (shooter.isShooting()
-                        && shooter.getRightCommandedPower()
-                        >= 0.999) {
+                        && shooter.getRightCommandedPower() >= 0.999) {
 
                     telemetry.addLine(
-                            "RIGHT MOTOR AT MAXIMUM POWER"
+                            "WARNING: RIGHT SHOOTER AT MAX POWER"
                     );
                 }
 
@@ -500,7 +528,6 @@ public class CompetitionTeleOp extends LinearOpMode {
 
         } finally {
 
-            // Always place the robot into a safe state.
             safeShutdown();
         }
     }
@@ -516,8 +543,7 @@ public class CompetitionTeleOp extends LinearOpMode {
     ) {
 
         /*
-         * Releasing the trigger immediately cancels the feed
-         * sequence and returns it to IDLE.
+         * Releasing the trigger immediately cancels the sequence.
          */
         if (!feedRequested) {
             resetFeedSequence();
@@ -526,83 +552,46 @@ public class CompetitionTeleOp extends LinearOpMode {
 
         switch (feedState) {
 
-            // -------------------------------------------------
-            // NEW FEED REQUEST
-            // -------------------------------------------------
-
             case IDLE:
 
-                setFeedState(
-                        FeedState.WAITING_FOR_READY
-                );
-
+                setFeedState(FeedState.WAITING_FOR_READY);
                 break;
 
-
-            // -------------------------------------------------
-            // WAIT FOR SHOOTER RPM
-            // -------------------------------------------------
 
             case WAITING_FOR_READY:
 
                 /*
-                 * A new pulse starts only after both wheels have
-                 * remained inside their RPM tolerance for the
-                 * Shooter READY_SETTLE_TIME_MS.
+                 * shooterReady already includes the configured
+                 * READY_SETTLE_TIME_MS requirement.
                  */
                 if (shooterReady) {
-
-                    setFeedState(
-                            FeedState.FEEDING
-                    );
+                    setFeedState(FeedState.FEEDING);
                 }
 
                 break;
 
-
-            // -------------------------------------------------
-            // FEED ONE BALL
-            // -------------------------------------------------
 
             case FEEDING:
 
                 /*
-                 * Once a feed pulse starts, allow the complete
-                 * pulse to run even if RPM drops.
-                 *
-                 * This prevents leaving a ball partially engaged
-                 * with the shooter wheels.
+                 * Complete the feed pulse even if shooter RPM
+                 * falls as the ball reaches the wheels.
                  */
                 if (getFeedStateElapsedMs()
                         >= getSafeFeedPulseTimeMs()) {
 
-                    setFeedState(
-                            FeedState.RECOVERING
-                    );
+                    setFeedState(FeedState.RECOVERING);
                 }
 
                 break;
 
 
-            // -------------------------------------------------
-            // SHOOTER RECOVERY
-            // -------------------------------------------------
-
             case RECOVERING:
 
-                /*
-                 * Stay in recovery for at least the configured
-                 * recovery time.
-                 *
-                 * After that, return to WAITING_FOR_READY.
-                 * The next pulse still requires shooterReady().
-                 */
                 if (getFeedStateElapsedMs()
                         >= getSafeRecoveryTimeMs()) {
 
-                    setFeedState(
-                            FeedState.WAITING_FOR_READY
-                    );
+                    setFeedState(FeedState.WAITING_FOR_READY);
                 }
 
                 break;
@@ -627,7 +616,7 @@ public class CompetitionTeleOp extends LinearOpMode {
     ) {
 
         /*
-         * An active feed request overrides normal intake control.
+         * Feeding has priority over normal intake control.
          */
         if (feedRequested) {
 
@@ -646,10 +635,6 @@ public class CompetitionTeleOp extends LinearOpMode {
         }
 
 
-        /*
-         * Normal intake operation when the feed trigger is not
-         * being held.
-         */
         blocker.closeBlocker();
 
         if (intakeRequested) {
@@ -668,39 +653,26 @@ public class CompetitionTeleOp extends LinearOpMode {
 
 
     // =========================================================
-    // SET FEED STATE
+    // FEED STATE HELPERS
     // =========================================================
 
-    private void setFeedState(
-            FeedState newState
-    ) {
+    private void setFeedState(FeedState newState) {
 
         if (feedState == newState) {
             return;
         }
 
         feedState = newState;
-
-        feedStateStartNanos =
-                System.nanoTime();
+        feedStateStartNanos = System.nanoTime();
     }
 
-
-    // =========================================================
-    // RESET FEED SEQUENCE
-    // =========================================================
 
     private void resetFeedSequence() {
 
         feedState = FeedState.IDLE;
-
         feedStateStartNanos = 0L;
     }
 
-
-    // =========================================================
-    // FEED STATE TIMER
-    // =========================================================
 
     private double getFeedStateElapsedMs() {
 
@@ -708,22 +680,13 @@ public class CompetitionTeleOp extends LinearOpMode {
             return 0.0;
         }
 
-        return (System.nanoTime()
-                - feedStateStartNanos)
+        return (System.nanoTime() - feedStateStartNanos)
                 / 1_000_000.0;
     }
 
 
-    // =========================================================
-    // SAFE LIVE TIMING VALUES
-    // =========================================================
-
     private long getSafeFeedPulseTimeMs() {
 
-        /*
-         * Prevent a zero or negative pulse from causing rapid
-         * state switching.
-         */
         return Math.max(
                 1L,
                 FEED_PULSE_TIME_MS
@@ -733,9 +696,6 @@ public class CompetitionTeleOp extends LinearOpMode {
 
     private long getSafeRecoveryTimeMs() {
 
-        /*
-         * Zero recovery is allowed, but negative values are not.
-         */
         return Math.max(
                 0L,
                 FEED_RECOVERY_TIME_MS
@@ -744,7 +704,7 @@ public class CompetitionTeleOp extends LinearOpMode {
 
 
     // =========================================================
-    // FEED STATUS TEXT
+    // FEED STATUS
     // =========================================================
 
     private String getFeedStatus(
@@ -794,24 +754,17 @@ public class CompetitionTeleOp extends LinearOpMode {
 
         resetFeedSequence();
 
-
-        /*
-         * Stop the feeder before shutting down the shooter.
-         */
         if (intake != null) {
             intake.intakeOff();
         }
-
 
         if (blocker != null) {
             blocker.closeBlocker();
         }
 
-
         if (shooter != null) {
             shooter.shooterOff();
         }
-
 
         if (follower != null) {
 
