@@ -22,12 +22,11 @@ import java.util.List;
 public class CompetitionTeleOp extends LinearOpMode {
 
     // =========================================================
-    // LIVE-TUNABLE FEED SETTINGS
+    // PRECISION-FEED SETTINGS
     // =========================================================
 
-    public static long FEED_PULSE_TIME_MS = 10;
-    public static long FEED_RECOVERY_TIME_MS = 0;
-
+    public static long FEED_PULSE_TIME_MS = 100;
+    public static long FEED_RECOVERY_TIME_MS = 250;
 
     // =========================================================
     // SUBSYSTEMS
@@ -36,26 +35,23 @@ public class CompetitionTeleOp extends LinearOpMode {
     private Follower follower;
 
     private Shooter shooter;
-    private Blocker blocker;
     private Intake intake;
+    private Blocker blocker;
 
     private List<LynxModule> hubs;
 
-
     // =========================================================
-    // FEED STATE MACHINE
+    // PRECISION-FEED STATE
     // =========================================================
 
     private enum FeedState {
         IDLE,
-        WAITING_FOR_READY,
         FEEDING,
         RECOVERING
     }
 
     private FeedState feedState = FeedState.IDLE;
     private long feedStateStartNanos = 0L;
-
 
     // =========================================================
     // RUN OPMODE
@@ -66,108 +62,8 @@ public class CompetitionTeleOp extends LinearOpMode {
 
         try {
 
-            // -------------------------------------------------
-            // Initialise robot
-            // -------------------------------------------------
-
-            follower = Constants.create(hardwareMap);
-
-            shooter = new Shooter(hardwareMap);
-            blocker = new Blocker(hardwareMap);
-            intake = new Intake(hardwareMap);
-
-
-            // -------------------------------------------------
-            // Manual bulk caching
-            // -------------------------------------------------
-
-            hubs = hardwareMap.getAll(LynxModule.class);
-
-            for (LynxModule hub : hubs) {
-                hub.setBulkCachingMode(
-                        LynxModule.BulkCachingMode.MANUAL
-                );
-            }
-
-
-            // -------------------------------------------------
-            // Safe initial state
-            // -------------------------------------------------
-
-            shooter.shooterOff();
-            intake.intakeOff();
-            blocker.closeBlocker();
-
-            resetFeedSequence();
-
-
-            // -------------------------------------------------
-            // Initial telemetry
-            // -------------------------------------------------
-
-            telemetry.addLine("ROBOT READY");
-            telemetry.addLine("Cross/A: Shooter ON");
-            telemetry.addLine("Circle/B: Shooter IDLE");
-            telemetry.addLine("Right trigger: Automatic pulse feed");
-            telemetry.addLine("Right bumper: Intake");
-            telemetry.addLine("Left bumper: Reverse intake");
-
-            telemetry.addData(
-                    "Feed pulse",
-                    "%d ms",
-                    FEED_PULSE_TIME_MS
-            );
-
-            telemetry.addData(
-                    "Feed recovery",
-                    "%d ms",
-                    FEED_RECOVERY_TIME_MS
-            );
-
-            telemetry.addData(
-                    "Shooting target",
-                    "%.0f RPM",
-                    Shooter.TARGET_RPM
-            );
-
-            telemetry.addData(
-                    "Idle target",
-                    "%.0f RPM",
-                    Shooter.IDLE_RPM
-            );
-
-            telemetry.addData(
-                    "Shooting Base / KP",
-                    "%.3f / %.6f",
-                    Shooter.BASE_POWER,
-                    Shooter.KP
-            );
-
-            telemetry.addData(
-                    "Idle Base / KP",
-                    "%.3f / %.6f",
-                    Shooter.IDLE_BASE_POWER,
-                    Shooter.IDLE_KP
-            );
-
-            telemetry.addData(
-                    "Ready tolerance",
-                    "+/- %.0f RPM",
-                    Shooter.READY_TOLERANCE_RPM
-            );
-
-            telemetry.addData(
-                    "Ready settle time",
-                    "%.0f ms",
-                    Shooter.READY_SETTLE_TIME_MS
-            );
-
-            telemetry.update();
-
-
-            // -------------------------------------------------
-            // Wait for start
-            // -------------------------------------------------
+            initialiseRobot();
+            showReadyTelemetry();
 
             waitForStart();
 
@@ -175,31 +71,18 @@ public class CompetitionTeleOp extends LinearOpMode {
                 return;
             }
 
-            // Start at idle RPM.
             shooter.shooterIdle();
-
-
-            // =================================================
-            // MAIN LOOP
-            // =================================================
+            resetFeedSequence();
 
             while (opModeIsActive()) {
 
-                // ---------------------------------------------
-                // Clear bulk cache
-                // ---------------------------------------------
+                clearBulkCache();
 
-                for (LynxModule hub : hubs) {
-                    hub.clearBulkCache();
-                }
-
-
-                // ---------------------------------------------
-                // Driver inputs
-                // ---------------------------------------------
-
-                boolean feedRequested =
+                boolean precisionFire =
                         gamepad1.right_trigger > 0.5;
+
+                boolean rapidFire =
+                        gamepad1.left_trigger > 0.5;
 
                 boolean intakeRequested =
                         gamepad1.right_bumper;
@@ -207,323 +90,38 @@ public class CompetitionTeleOp extends LinearOpMode {
                 boolean reverseRequested =
                         gamepad1.left_bumper;
 
-                boolean shooterRequested =
+                boolean shooterOnRequested =
                         gamepad1.cross;
 
-                boolean idleRequested =
+                boolean shooterIdleRequested =
                         gamepad1.circle;
 
+                updateDrive();
 
-                // ---------------------------------------------
-                // Drive control
-                // ---------------------------------------------
-
-                double forward =
-                        -gamepad1.left_stick_y;
-
-                double strafe =
-                        -Math.pow(gamepad1.left_stick_x, 3);
-
-                double turn =
-                        -Math.pow(gamepad1.right_stick_x, 3);
-
-                follower.manual(
-                        new DrivePowers(
-                                forward,
-                                strafe,
-                                turn
-                        )
+                updateShooterMode(
+                        precisionFire,
+                        rapidFire,
+                        intakeRequested,
+                        reverseRequested,
+                        shooterOnRequested,
+                        shooterIdleRequested
                 );
-
-                follower.update();
-
-
-                // ---------------------------------------------
-                // Shooter mode control
-                // ---------------------------------------------
-                //
-                // Priority:
-                // 1. Feed request
-                // 2. Manual shooter command
-                // 3. Intake/reverse
-                // 4. Manual idle command
-                //
-                // If no command is entered, the current shooter
-                // mode remains latched.
-                // ---------------------------------------------
-
-                if (feedRequested) {
-
-                    shooter.shooterOn();
-
-                } else if (shooterRequested) {
-
-                    shooter.shooterOn();
-
-                } else if (intakeRequested || reverseRequested) {
-
-                    shooter.shooterIdle();
-
-                } else if (idleRequested) {
-
-                    shooter.shooterIdle();
-                }
-
-
-                // ---------------------------------------------
-                // Run shooter controller exactly once
-                // ---------------------------------------------
 
                 shooter.update();
 
-
-                // ---------------------------------------------
-                // Read values stored by Shooter.update()
-                // ---------------------------------------------
-
-                double leftRPM =
-                        shooter.getLeftRPM();
-
-                double rightRPM =
-                        shooter.getRightRPM();
-
-                boolean leftReady =
-                        shooter.isLeftReady(leftRPM);
-
-                boolean rightReady =
-                        shooter.isRightReady(rightRPM);
-
-                /*
-                 * This method also manages READY_SETTLE_TIME_MS.
-                 * It should only be called once per active loop.
-                 */
-                boolean shooterReady =
-                        shooter.shooterReady(
-                                leftRPM,
-                                rightRPM
-                        );
-
-
-                // ---------------------------------------------
-                // Update feed controller
-                // ---------------------------------------------
-
-                updateFeedState(
-                        feedRequested,
-                        shooterReady
-                );
-
-                applyFeedAndIntakeOutputs(
-                        feedRequested,
+                updateIntakeAndBlocker(
+                        precisionFire,
+                        rapidFire,
                         intakeRequested,
                         reverseRequested
                 );
 
+                intake.update();
 
-                // ---------------------------------------------
-                // Telemetry
-                // ---------------------------------------------
-
-                telemetry.addData(
-                        "Shooter Mode",
-                        shooter.getModeName()
+                updateTelemetry(
+                        precisionFire,
+                        rapidFire
                 );
-
-                telemetry.addData(
-                        "Shooter Ready",
-                        shooterReady ? "YES" : "NO"
-                );
-
-                telemetry.addData(
-                        "Feed State",
-                        feedState.name()
-                );
-
-                telemetry.addData(
-                        "Feed Status",
-                        getFeedStatus(
-                                feedRequested,
-                                intakeRequested,
-                                reverseRequested
-                        )
-                );
-
-                telemetry.addData(
-                        "Feed State Timer",
-                        "%.0f ms",
-                        getFeedStateElapsedMs()
-                );
-
-                telemetry.addLine();
-
-
-                // ---------------------------------------------
-                // Left shooter
-                // ---------------------------------------------
-
-                telemetry.addData(
-                        "Left RPM",
-                        "%.0f / %.0f",
-                        leftRPM,
-                        shooter.getLeftTargetRPM()
-                );
-
-                telemetry.addData(
-                        "Left Error",
-                        "%.0f RPM",
-                        shooter.getLeftErrorRPM()
-                );
-
-                telemetry.addData(
-                        "Left Power",
-                        "%.3f",
-                        shooter.getLeftCommandedPower()
-                );
-
-                telemetry.addData(
-                        "Left Ready",
-                        leftReady ? "YES" : "NO"
-                );
-
-                telemetry.addData(
-                        "Left Encoder",
-                        "%.0f ticks/s",
-                        shooter.getLeftTicksPerSecond()
-                );
-
-                telemetry.addLine();
-
-
-                // ---------------------------------------------
-                // Right shooter
-                // ---------------------------------------------
-
-                telemetry.addData(
-                        "Right RPM",
-                        "%.0f / %.0f",
-                        rightRPM,
-                        shooter.getRightTargetRPM()
-                );
-
-                telemetry.addData(
-                        "Right Error",
-                        "%.0f RPM",
-                        shooter.getRightErrorRPM()
-                );
-
-                telemetry.addData(
-                        "Right Power",
-                        "%.3f",
-                        shooter.getRightCommandedPower()
-                );
-
-                telemetry.addData(
-                        "Right Ready",
-                        rightReady ? "YES" : "NO"
-                );
-
-                telemetry.addData(
-                        "Right Encoder",
-                        "%.0f ticks/s",
-                        shooter.getRightTicksPerSecond()
-                );
-
-                telemetry.addLine();
-
-
-                // ---------------------------------------------
-                // Live feed settings
-                // ---------------------------------------------
-
-                telemetry.addData(
-                        "Feed Pulse Setting",
-                        "%d ms",
-                        FEED_PULSE_TIME_MS
-                );
-
-                telemetry.addData(
-                        "Feed Recovery Setting",
-                        "%d ms",
-                        FEED_RECOVERY_TIME_MS
-                );
-
-
-                // ---------------------------------------------
-                // Shooter live-tuning settings
-                // ---------------------------------------------
-
-                telemetry.addData(
-                        "Shooting Target",
-                        "%.0f RPM",
-                        Shooter.TARGET_RPM
-                );
-
-                telemetry.addData(
-                        "Shooting Base / KP",
-                        "%.3f / %.6f",
-                        Shooter.BASE_POWER,
-                        Shooter.KP
-                );
-
-                telemetry.addData(
-                        "Idle Target",
-                        "%.0f RPM",
-                        Shooter.IDLE_RPM
-                );
-
-                telemetry.addData(
-                        "Idle Base / KP",
-                        "%.3f / %.6f",
-                        Shooter.IDLE_BASE_POWER,
-                        Shooter.IDLE_KP
-                );
-
-                telemetry.addData(
-                        "Ready Tolerance",
-                        "+/- %.0f RPM",
-                        Shooter.READY_TOLERANCE_RPM
-                );
-
-                telemetry.addData(
-                        "Ready Settle",
-                        "%.0f ms",
-                        Shooter.READY_SETTLE_TIME_MS
-                );
-
-                telemetry.addData(
-                        "Ticks / Rev",
-                        "%.1f",
-                        Shooter.TICKS_PER_REV
-                );
-
-                telemetry.addData(
-                        "Gear Ratio",
-                        "%.4f",
-                        Shooter.GEAR_RATIO
-                );
-
-
-                // ---------------------------------------------
-                // Power-limit warnings
-                // ---------------------------------------------
-
-                if (shooter.isShooting()
-                        && shooter.getLeftCommandedPower() >= 0.999) {
-
-                    telemetry.addLine(
-                            "WARNING: LEFT SHOOTER AT MAX POWER"
-                    );
-                }
-
-                if (shooter.isShooting()
-                        && shooter.getRightCommandedPower() >= 0.999) {
-
-                    telemetry.addLine(
-                            "WARNING: RIGHT SHOOTER AT MAX POWER"
-                    );
-                }
-
-                telemetry.update();
             }
 
         } finally {
@@ -532,70 +130,251 @@ public class CompetitionTeleOp extends LinearOpMode {
         }
     }
 
+    // =========================================================
+    // INITIALISATION
+    // =========================================================
+
+    private void initialiseRobot() {
+
+        follower = Constants.create(hardwareMap);
+
+        shooter = new Shooter(hardwareMap);
+        intake = new Intake(hardwareMap);
+        blocker = new Blocker(hardwareMap);
+
+        hubs = hardwareMap.getAll(
+                LynxModule.class
+        );
+
+        for (LynxModule hub : hubs) {
+
+            hub.setBulkCachingMode(
+                    LynxModule.BulkCachingMode.MANUAL
+            );
+        }
+
+        shooter.shooterOff();
+        intake.offMode();
+        intake.update();
+        blocker.closeBlocker();
+
+        resetFeedSequence();
+    }
 
     // =========================================================
-    // UPDATE FEED STATE
+    // READY TELEMETRY
     // =========================================================
 
-    private void updateFeedState(
-            boolean feedRequested,
-            boolean shooterReady
+    private void showReadyTelemetry() {
+
+        telemetry.addLine("ROBOT READY");
+        telemetry.addLine();
+
+        telemetry.addLine("Cross / A: Shooter ON");
+        telemetry.addLine("Circle / B: Shooter IDLE");
+        telemetry.addLine("Right Trigger: Precision Fire");
+        telemetry.addLine("Left Trigger: Rapid Fire");
+        telemetry.addLine("Right Bumper: Intake");
+        telemetry.addLine("Left Bumper: Reverse Intake");
+
+        telemetry.addLine();
+
+        telemetry.addData(
+                "Front shoot / idle",
+                "%.0f / %.0f RPM",
+                Shooter.FRONT_SHOOT_RPM,
+                Shooter.FRONT_IDLE_RPM
+        );
+
+        telemetry.addData(
+                "Rear shoot / idle",
+                "%.0f / %.0f RPM",
+                Shooter.REAR_SHOOT_RPM,
+                Shooter.REAR_IDLE_RPM
+        );
+
+        telemetry.addData(
+                "Precision pulse",
+                "%d ms",
+                FEED_PULSE_TIME_MS
+        );
+
+        telemetry.addData(
+                "Precision recovery",
+                "%d ms",
+                FEED_RECOVERY_TIME_MS
+        );
+
+        telemetry.update();
+    }
+
+    // =========================================================
+    // BULK CACHE
+    // =========================================================
+
+    private void clearBulkCache() {
+
+        for (LynxModule hub : hubs) {
+            hub.clearBulkCache();
+        }
+    }
+
+    // =========================================================
+    // DRIVE
+    // =========================================================
+
+    private void updateDrive() {
+
+        double forward =
+                -gamepad1.left_stick_y;
+
+        double strafe =
+                -Math.pow(
+                        gamepad1.left_stick_x,
+                        3
+                );
+
+        double turn =
+                -Math.pow(
+                        gamepad1.right_stick_x,
+                        3
+                );
+
+        follower.manual(
+                new DrivePowers(
+                        forward,
+                        strafe,
+                        turn
+                )
+        );
+
+        follower.update();
+    }
+
+    // =========================================================
+    // SHOOTER CONTROL
+    // =========================================================
+
+    private void updateShooterMode(
+            boolean precisionFire,
+            boolean rapidFire,
+            boolean intakeRequested,
+            boolean reverseRequested,
+            boolean shooterOnRequested,
+            boolean shooterIdleRequested
     ) {
 
-        /*
-         * Releasing the trigger immediately cancels the sequence.
-         */
-        if (!feedRequested) {
+        if (precisionFire
+                || rapidFire
+                || shooterOnRequested) {
+
+            shooter.shooterOn();
+
+        } else if (shooterIdleRequested
+                || intakeRequested
+                || reverseRequested) {
+
+            shooter.shooterIdle();
+        }
+    }
+
+    // =========================================================
+    // INTAKE AND BLOCKER CONTROL
+    // =========================================================
+
+    private void updateIntakeAndBlocker(
+            boolean precisionFire,
+            boolean rapidFire,
+            boolean intakeRequested,
+            boolean reverseRequested
+    ) {
+
+        // Rapid fire has the highest priority.
+        if (rapidFire) {
+
             resetFeedSequence();
+
+            blocker.openBlocker();
+            intake.rapidFireMode();
+
             return;
         }
+
+        // Precision fire uses timed feeding and recovery.
+        if (precisionFire) {
+
+            updatePrecisionFeed();
+
+            if (feedState == FeedState.FEEDING) {
+
+                blocker.openBlocker();
+                intake.feedMode();
+
+            } else {
+
+                blocker.closeBlocker();
+                intake.offMode();
+            }
+
+            return;
+        }
+
+        resetFeedSequence();
+        blocker.closeBlocker();
+
+        if (intakeRequested) {
+
+            intake.intakeMode();
+
+        } else if (reverseRequested) {
+
+            intake.reverseMode();
+
+        } else {
+
+            intake.offMode();
+        }
+    }
+
+    // =========================================================
+    // PRECISION-FEED CONTROL
+    // =========================================================
+
+    private void updatePrecisionFeed() {
 
         switch (feedState) {
 
             case IDLE:
 
-                setFeedState(FeedState.WAITING_FOR_READY);
-                break;
-
-
-            case WAITING_FOR_READY:
-
-                /*
-                 * shooterReady already includes the configured
-                 * READY_SETTLE_TIME_MS requirement.
-                 */
-                if (shooterReady) {
-                    setFeedState(FeedState.FEEDING);
-                }
+                setFeedState(
+                        FeedState.FEEDING
+                );
 
                 break;
-
 
             case FEEDING:
 
-                /*
-                 * Complete the feed pulse even if shooter RPM
-                 * falls as the ball reaches the wheels.
-                 */
                 if (getFeedStateElapsedMs()
                         >= getSafeFeedPulseTimeMs()) {
 
-                    setFeedState(FeedState.RECOVERING);
+                    setFeedState(
+                            FeedState.RECOVERING
+                    );
                 }
 
                 break;
-
 
             case RECOVERING:
 
                 if (getFeedStateElapsedMs()
                         >= getSafeRecoveryTimeMs()) {
 
-                    setFeedState(FeedState.WAITING_FOR_READY);
+                    setFeedState(
+                            FeedState.FEEDING
+                    );
                 }
 
                 break;
-
 
             default:
 
@@ -604,68 +383,18 @@ public class CompetitionTeleOp extends LinearOpMode {
         }
     }
 
-
-    // =========================================================
-    // APPLY FEEDER AND INTAKE OUTPUTS
-    // =========================================================
-
-    private void applyFeedAndIntakeOutputs(
-            boolean feedRequested,
-            boolean intakeRequested,
-            boolean reverseRequested
+    private void setFeedState(
+            FeedState newState
     ) {
-
-        /*
-         * Feeding has priority over normal intake control.
-         */
-        if (feedRequested) {
-
-            if (feedState == FeedState.FEEDING) {
-
-                blocker.openBlocker();
-                intake.feedOn();
-
-            } else {
-
-                blocker.closeBlocker();
-                intake.intakeOff();
-            }
-
-            return;
-        }
-
-
-        blocker.closeBlocker();
-
-        if (intakeRequested) {
-
-            intake.intakeOn();
-
-        } else if (reverseRequested) {
-
-            intake.intakeReverse();
-
-        } else {
-
-            intake.intakeOff();
-        }
-    }
-
-
-    // =========================================================
-    // FEED STATE HELPERS
-    // =========================================================
-
-    private void setFeedState(FeedState newState) {
 
         if (feedState == newState) {
             return;
         }
 
         feedState = newState;
-        feedStateStartNanos = System.nanoTime();
+        feedStateStartNanos =
+                System.nanoTime();
     }
-
 
     private void resetFeedSequence() {
 
@@ -673,17 +402,17 @@ public class CompetitionTeleOp extends LinearOpMode {
         feedStateStartNanos = 0L;
     }
 
-
     private double getFeedStateElapsedMs() {
 
         if (feedStateStartNanos == 0L) {
             return 0.0;
         }
 
-        return (System.nanoTime() - feedStateStartNanos)
-                / 1_000_000.0;
+        return (
+                System.nanoTime()
+                        - feedStateStartNanos
+        ) / 1_000_000.0;
     }
-
 
     private long getSafeFeedPulseTimeMs() {
 
@@ -693,7 +422,6 @@ public class CompetitionTeleOp extends LinearOpMode {
         );
     }
 
-
     private long getSafeRecoveryTimeMs() {
 
         return Math.max(
@@ -702,49 +430,159 @@ public class CompetitionTeleOp extends LinearOpMode {
         );
     }
 
-
     // =========================================================
-    // FEED STATUS
+    // TELEMETRY
     // =========================================================
 
-    private String getFeedStatus(
-            boolean feedRequested,
-            boolean intakeRequested,
-            boolean reverseRequested
+    private void updateTelemetry(
+            boolean precisionFire,
+            boolean rapidFire
     ) {
 
-        if (feedRequested) {
+        String firingMode = "NONE";
 
-            switch (feedState) {
-
-                case IDLE:
-                    return "STARTING";
-
-                case WAITING_FOR_READY:
-                    return "WAITING FOR RPM";
-
-                case FEEDING:
-                    return "FEEDING ONE BALL";
-
-                case RECOVERING:
-                    return "SHOOTER RECOVERY";
-
-                default:
-                    return "UNKNOWN";
-            }
+        if (rapidFire) {
+            firingMode = "RAPID FIRE";
+        } else if (precisionFire) {
+            firingMode = "PRECISION";
         }
 
-        if (intakeRequested) {
-            return "INTAKING";
-        }
+        telemetry.addData(
+                "Shooter",
+                shooter.getModeName()
+        );
 
-        if (reverseRequested) {
-            return "REVERSING";
-        }
+        telemetry.addData(
+                "Firing Mode",
+                firingMode
+        );
 
-        return "CLOSED";
+        telemetry.addData(
+                "Feed State",
+                feedState.name()
+        );
+
+        telemetry.addData(
+                "Intake",
+                "%s | %.2f",
+                intake.getModeName(),
+                intake.getCommandedPower()
+        );
+
+        telemetry.addLine();
+
+        telemetry.addData(
+                "Front",
+                "%.0f / %.0f RPM | E %.0f | P %.3f",
+                shooter.getFrontRPM(),
+                shooter.getFrontTargetRPM(),
+                shooter.getFrontErrorRPM(),
+                shooter.getFrontCommandedPower()
+        );
+
+        telemetry.addData(
+                "Rear",
+                "%.0f / %.0f RPM | E %.0f | P %.3f",
+                shooter.getRearRPM(),
+                shooter.getRearTargetRPM(),
+                shooter.getRearErrorRPM(),
+                shooter.getRearCommandedPower()
+        );
+
+        telemetry.addLine();
+
+        telemetry.addData(
+                "Battery",
+                "%.2f V",
+                shooter.getBatteryVoltage()
+        );
+
+        telemetry.addData(
+                "Voltage Compensation",
+                "%.3f",
+                shooter.getVoltageCompensation()
+        );
+
+        telemetry.addLine();
+
+        telemetry.addData(
+                "Front Shoot / Idle",
+                "%.0f / %.0f RPM",
+                Shooter.FRONT_SHOOT_RPM,
+                Shooter.FRONT_IDLE_RPM
+        );
+
+        telemetry.addData(
+                "Front KF / KP",
+                "%.7f / %.7f",
+                Shooter.FRONT_KF,
+                Shooter.FRONT_KP
+        );
+
+        telemetry.addData(
+                "Rear Shoot / Idle",
+                "%.0f / %.0f RPM",
+                Shooter.REAR_SHOOT_RPM,
+                Shooter.REAR_IDLE_RPM
+        );
+
+        telemetry.addData(
+                "Rear KF / KP",
+                "%.7f / %.7f",
+                Shooter.REAR_KF,
+                Shooter.REAR_KP
+        );
+
+        telemetry.addLine();
+
+        telemetry.addData(
+                "Feed Pulse / Recovery",
+                "%d / %d ms",
+                FEED_PULSE_TIME_MS,
+                FEED_RECOVERY_TIME_MS
+        );
+
+        addPowerLimitWarnings();
+
+        telemetry.update();
     }
 
+    private void addPowerLimitWarnings() {
+
+        double frontLimit = Math.max(
+                0.0,
+                Math.min(
+                        1.0,
+                        Shooter.FRONT_MAX_POWER
+                )
+        );
+
+        double rearLimit = Math.max(
+                0.0,
+                Math.min(
+                        1.0,
+                        Shooter.REAR_MAX_POWER
+                )
+        );
+
+        if (shooter.isShooting()
+                && shooter.getFrontCommandedPower()
+                >= frontLimit - 0.001) {
+
+            telemetry.addLine(
+                    "WARNING: FRONT SHOOTER AT POWER LIMIT"
+            );
+        }
+
+        if (shooter.isShooting()
+                && shooter.getRearCommandedPower()
+                >= rearLimit - 0.001) {
+
+            telemetry.addLine(
+                    "WARNING: REAR SHOOTER AT POWER LIMIT"
+            );
+        }
+    }
 
     // =========================================================
     // SAFE SHUTDOWN
@@ -755,7 +593,9 @@ public class CompetitionTeleOp extends LinearOpMode {
         resetFeedSequence();
 
         if (intake != null) {
-            intake.intakeOff();
+
+            intake.offMode();
+            intake.update();
         }
 
         if (blocker != null) {
@@ -770,9 +610,9 @@ public class CompetitionTeleOp extends LinearOpMode {
 
             follower.manual(
                     new DrivePowers(
-                            0,
-                            0,
-                            0
+                            0.0,
+                            0.0,
+                            0.0
                     )
             );
 
